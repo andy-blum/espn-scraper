@@ -9,7 +9,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "puppeteer": "^5.2.1",
+    "json-from-text": "^1.1.0",
+    "node-fetch": "^2.6.1",
     "write-json-file": "^4.3.0"
   }
 }

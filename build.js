@@ -1,91 +1,99 @@
-const puppeteer = require('puppeteer');
+const fetch = require('node-fetch')
 const writeJsonFile = require('write-json-file');
+const getObj = require('json-from-text');
 
-let html, $, data;
-const NFLteams = [];
-const NFLplayers = [];
+const promises = {
+  'rosters': [],
+  'players': []
+};
+
+const key = /window\[\'\_\_espnfitt\_\_\'\]/;
 
 (async () => {
-  const browser = await puppeteer.launch({ executablePath: '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser' });
-  const page = await browser.newPage();
 
-  // Get the teams
-  console.log('Updating Teams...')
-  await page.goto(`https://www.espn.com/nfl/teams`);
-  html = await page.content();
-  data = await page.evaluate('__espnfitt__.page.content.teams.nfl');
-  for (const conf of data) {
-    const teams = conf.teams;
-    for (const team of teams) {
-      const NFLteam = {
-        'abbr': team.abbrev,
-        'full': team.name,
-        'logo': team.logo,
+  // Fetch all teams
+  let payload = await fetch('https://www.espn.com/nfl/teams')
+    .then(resp => resp.text())
+    .then(text => getObj(text).jsonResults)
+    .catch(err => console.log(err));
+
+  const teams = [];
+  for (const key in payload) {
+    if (payload[key].hasOwnProperty('page')) {
+      let conferences = payload[key].page.content.teams.nfl;
+      for (const conference of conferences) {
+        for (const team of conference.teams) {
+          teams.push(team);
+        }
       }
-      NFLteams.push(NFLteam);
+      await writeJsonFile('./NFLTeams.json', teams);
     }
   }
-  console.log(`Found ${NFLteams.length} in the league.`);
 
+  // Fetch all ids from team rosters
+  const ids = [];
+  let promises = [];
+  for (const team of teams) {
+    promises.push(fetch(`https://www.espn.com/nfl/team/roster/_/name/${team.abbrev}`)
+      .then(resp => resp.text()))
+  }
+  await Promise.all(promises).then(async (vals) => {
+    for (const val of vals) {
+      const payload = getObj(val).jsonResults;
+      for (const key in payload) {
+        if (payload[key].hasOwnProperty('page')) {
+          let posgroups = payload[key].page.content.roster.groups;
+          for (const group of posgroups) {
+            await writeJsonFile('./posgroups.json', group);
+            for (const player of group.athletes) {
+              ids.push(player.id);
+            }
+          }
+        }
+      }
+    }
+  });
+  await writeJsonFile('./NFLPlayerIDs.json', ids);
 
-  // Get the rosters
-  const playerIds = [];
-  console.log('Updating Rosters...');
-  for (const team of NFLteams) {
-    console.log(`    Loaded ${team.full}`);
-    await page.goto(`https://www.espn.com/nfl/team/roster/_/name/${team.abbr}`);
-    html = await page.content();
-    data = await page.evaluate('__espnfitt__.page.content.roster.groups');
-    for (const posgroup of data) {
-      const players = posgroup.athletes;
-      for (const player of players) {
-        if (
-          player.position != 'OT' &&
-          player.position != 'G' &&
-          player.position != 'C'
-        ) {
-          playerIds.push(player.id);
+  // Fetch all player info
+  const players = [];
+  for (const id of ids) {
+    console.log(`Player ${players.length + 1} of ${ids.length}`);
+    const payload = await fetch(`https://www.espn.com/nfl/player/_/id/${id}`)
+      .then(resp => resp.text())
+      .then(text => getObj(text).jsonResults)
+      .catch(err => console.log(err));
+
+    for (const key in payload) {
+      if (payload[key].hasOwnProperty('page')) {
+        let data = payload[key].page.content.player;
+
+        const ath = data.prtlCmnApiRsp.athlete;
+        const header = data.plyrHdr.ath
+        const player = {
+          'age': ath.age,
+          'dob': ath.displayDOB,
+          'firstName': header.fNm,
+          'id': ath.playerId,
+          'img': header.img,
+          'lastName': header.lNm,
+          'logo': header.logo,
+          'num': header.dspNum,
+          'pos': header.posAbv,
+          'status': ath.abbreviation,
+          'team': ath.team.abbrev,
+        };
+
+        if (!!ath.displayDraft) {
+          player.draft = ath.displayDraft.substr(0, 4)
+        }
+
+        players.push(player);
+        if (players.length % 50 === 0) {
+          await writeJsonFile('./NFLPlayers.json', players);
         }
       }
     }
   }
-  console.log(`Found ${playerIds.length} players on active rosters.`);
-
-  // Get all player info
-  console.log('Building active player list...');
-  for (const id of playerIds) {
-    console.log(`${NFLplayers.length + 1}/${playerIds.length} (${id})`)
-    await page.goto(`https://www.espn.com/nfl/player/_/id/${id}`);
-    html = await page.content();
-    data = await page.evaluate('__espnfitt__.page.content.player');
-
-    const ath = data.prtlCmnApiRsp.athlete;
-    const header = data.plyrHdr.ath
-    const player = {
-      'age': ath.age,
-      'dob': ath.displayDOB,
-      'firstName': header.fNm,
-      'id': ath.playerId,
-      'img': header.img,
-      'lastName': header.lNm,
-      'logo': header.logo,
-      'num': header.dspNum,
-      'pos': header.posAbv,
-      'status': ath.abbreviation,
-      'team': ath.team.abbrev,
-    };
-
-    if (!!ath.displayDraft) {
-      player.draft = ath.displayDraft.substr(0, 4)
-    }
-
-    NFLplayers.push(player);
-  }
-
-  // Write results to file
-  console.log('Writing to disk...');
-  await writeJsonFile('./teams.json', NFLteams);
-  await writeJsonFile('./players.json', NFLplayers);
-  console.log('Done.');
-  await browser.close();
+  await writeJsonFile('./NFLPlayers.json', players);
 })();
